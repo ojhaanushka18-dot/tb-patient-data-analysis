@@ -348,16 +348,6 @@ knitr::kable(
   q10_summary,
   caption = "Summary of the selected male patient subset"
 )
-
-# Display a small sample of the subset
-knitr::kable(
-  head(
-    male_no_blood_sputum %>%
-      select(id, gender, blood_in_sputum),
-    6
-  ),
-  caption = "First six records in the subset"
-)
 ```
 
 The resulting subset contains 269 patients. All selected records are male and have blood in sputum recorded as 0. The complete working dataset remains unchanged.
