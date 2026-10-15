@@ -1,0 +1,472 @@
+---
+title: "TB Patient Dataset: Capstone Analysis"
+format:
+  html:
+    embed-resources: true
+---
+
+## Introduction
+
+This report presents the analysis of a dataset containing 605 patients assessed for clinical parameters relevant to tuberculosis. The analysis follows the 11 questions provided in the capstone assignment and includes data preparation, descriptive statistics, visualisations, risk-category comparisons, and an exploratory data-quality investigation.
+
+## Data loading and preparation
+
+The original dataset is imported and a cleaned working copy is created. The original data is retained separately.
+
+```{r setup}
+#| message: false
+library(readxl)
+library(tidyverse)
+library(janitor)
+
+# Import the original Excel dataset
+tb_data <- read_excel("../data/clinical parameters_TBpatients.xlsx")
+
+# Create a cleaned working copy
+tb_clean <- tb_data %>%
+  clean_names()
+
+# Confirm the dataset dimensions
+dim(tb_data)
+dim(tb_clean)
+```
+
+## Question 1: Move and rename the assessment date
+
+The assessment date column is moved to the first position and renamed `start`.
+
+## Question 2: Create a unique row-based ID
+
+A unique ID is created for each patient record using its row number.
+
+## Question 3: Calculate assessment delay and mean age
+
+Assessment delay is calculated in days from the difference between `end` and `start`. The mean delay and mean age are calculated before missing age values are replaced with the mean.
+
+```{r q1-to-q3}
+# Question 1
+tb_clean <- tb_clean %>%
+  relocate(date_of_assessment) %>%
+  rename(start = date_of_assessment)
+
+# Question 2
+tb_clean <- tb_clean %>%
+  tibble::rownames_to_column(var = "id")
+
+# Question 3, Part A: Calculate delay in days
+tb_clean <- tb_clean %>%
+  mutate(
+    delay = as.numeric(
+      difftime(end, start, units = "days")
+    )
+  )
+
+# Calculate summary values before imputation
+q3_summary <- tibble(
+  patients = nrow(tb_clean),
+  mean_delay_days = round(mean(tb_clean$delay, na.rm = TRUE), 5),
+  missing_delay_before_imputation = sum(is.na(tb_clean$delay)),
+  mean_age_years = round(mean(tb_clean$age, na.rm = TRUE), 5),
+  missing_age_before_imputation = sum(is.na(tb_clean$age))
+)
+
+knitr::kable(q3_summary, digits = 5)
+
+# Question 3, Part B: Replace missing ages with the mean
+tb_clean <- tb_clean %>%
+  mutate(
+    age = ifelse(
+      is.na(age),
+      mean(age, na.rm = TRUE),
+      age
+    )
+  )
+
+# Verify missing values after imputation
+tibble(
+  missing_age_after_imputation = sum(is.na(tb_clean$age)),
+  missing_delay_after_imputation = sum(is.na(tb_clean$delay))
+)
+```
+
+## Question 4: Percentage of patients with cough
+
+The percentage of patients with cough was calculated using the number of patients with cough recorded as present divided by the total number of patients with a recorded cough status.
+
+```{r q4}
+cough_summary <- tb_clean %>%
+  summarise(
+    n_with_cough = sum(current_symptoms_cough == 1, na.rm = TRUE),
+    n_recorded = sum(!is.na(current_symptoms_cough)),
+    percent_cough = round(n_with_cough / n_recorded * 100, 2)
+  )
+
+knitr::kable(cough_summary, digits = 2)
+```
+
+Of the 605 patients, 351 (58.02%) had cough recorded as a symptom. There were no missing values in the cough variable.
+
+## Question 5: Number of patients by district and gender
+
+The stacked column chart displays the number of patients in each district, with the columns divided by gender.
+
+```{r q5}
+ggplot(tb_clean, aes(x = district, fill = gender)) +
+  geom_bar() +
+  geom_text(
+    stat = "count",
+    aes(label = after_stat(count)),
+    position = position_stack(vjust = 0.5)
+  ) +
+  labs(
+    title = "Number of TB Patients by District and Gender",
+    x = "District",
+    y = "Number of patients",
+    fill = "Gender"
+  )
+```
+
+The dataset contains 605 patients across four districts. Lucknow has the largest number of patients (204), followed by Barabanki (148), Kanpur (134), and Unnao (119). The chart displays the female and male counts within each district.
+
+## Question 6: Is age normally distributed?
+
+The distribution of age was examined using a histogram and a normal Q–Q plot. These visualisations help assess the symmetry of the age distribution and its departure from normality.
+
+### Histogram of age
+
+```{r q6-histogram}
+ggplot(tb_clean, aes(x = age)) +
+  geom_histogram(
+    binwidth = 5,
+    fill = "steelblue",
+    colour = "white"
+  ) +
+  labs(
+    title = "Distribution of Patient Age",
+    x = "Age (years)",
+    y = "Number of patients"
+  )
+```
+
+### Normal Q–Q plot
+
+```{r q6-qq-plot}
+ggplot(tb_clean, aes(sample = age)) +
+  stat_qq() +
+  stat_qq_line(colour = "red") +
+  labs(
+    title = "Normal Q-Q Plot of Patient Age",
+    x = "Theoretical quantiles",
+    y = "Observed age (years)"
+  )
+```
+
+### Interpretation
+
+Visual inspection suggests that age is not normally distributed. The histogram shows a concentration of younger patients and a longer right tail toward older ages, indicating positive skewness. The Q–Q plot also shows systematic departures from the reference line, particularly toward the tails. Together, these plots suggest that the age distribution deviates from normality.
+
+This conclusion is based on visual assessment rather than a formal statistical test. Five missing age values were replaced with the mean in Question 3, and this should be kept in mind when interpreting the distribution.
+
+## Question 7: Stratification by number of abnormal parameters
+
+Patients were classified using the thresholds specified in the assignment: one abnormal parameter was classified as low risk, two to three as moderate risk, and four or more as high risk. Patients with zero abnormal parameters were kept in a separate category because the assignment does not define a risk category for zero.
+
+```{r q7}
+# Create the derived risk categories
+tb_clean <- tb_clean %>%
+  mutate(
+    derived_risk_category = case_when(
+      no_of_abnormal_parameters == 0 ~
+        "0 abnormal parameters (not classified)",
+      no_of_abnormal_parameters == 1 ~ "Low risk",
+      no_of_abnormal_parameters >= 2 &
+        no_of_abnormal_parameters <= 3 ~ "Moderate risk",
+      no_of_abnormal_parameters >= 4 ~ "High risk"
+    ),
+    derived_risk_category = factor(
+      derived_risk_category,
+      levels = c(
+        "0 abnormal parameters (not classified)",
+        "Low risk",
+        "Moderate risk",
+        "High risk"
+      )
+    )
+  )
+
+# Summarise the number of patients in each category
+q7_summary <- tb_clean %>%
+  count(derived_risk_category, .drop = FALSE) %>%
+  rename(
+    Category = derived_risk_category,
+    Patients = n
+  )
+
+knitr::kable(q7_summary, caption = "Patient counts by derived risk category")
+```
+
+The categorisation identified 91 patients with one abnormal parameter (low risk), 258 with two or three abnormal parameters (moderate risk), and 226 with four or more abnormal parameters (high risk). A further 30 patients had zero abnormal parameters and were retained separately rather than assigned to one of the specified risk categories.
+
+
+## Question 8: Medical officer classification compared with derived risk
+
+The medical officer's risk ratings were compared with the categories derived from the number of abnormal parameters. The original medical officer ratings are retained, while a separate column with shorter labels is created for the comparison. Missing medical officer ratings are kept as an explicit category.
+
+```{r q8}
+# Simplify the medical officer's original risk labels
+tb_clean <- tb_clean %>%
+  mutate(
+    medical_officer_risk_category = case_when(
+      is.na(final_risk_stratification_by_the_medical_officer) ~
+        "Missing/Not recorded",
+      str_detect(
+        final_risk_stratification_by_the_medical_officer,
+        regex("^Low risk", ignore_case = TRUE)
+      ) ~ "Low risk",
+      str_detect(
+        final_risk_stratification_by_the_medical_officer,
+        regex("^Moderate risk", ignore_case = TRUE)
+      ) ~ "Moderate risk",
+      str_detect(
+        final_risk_stratification_by_the_medical_officer,
+        regex("^High risk", ignore_case = TRUE)
+      ) ~ "High risk"
+    ),
+    medical_officer_risk_category = factor(
+      medical_officer_risk_category,
+      levels = c(
+        "Low risk",
+        "Moderate risk",
+        "High risk",
+        "Missing/Not recorded"
+      )
+    )
+  )
+
+# Create the cross-tabulation
+mo_vs_derived <- table(
+  tb_clean$medical_officer_risk_category,
+  tb_clean$derived_risk_category,
+  dnn = c("Medical officer", "Derived rule")
+)
+
+# Display the cross-tabulation with row and column totals
+q8_table_display <- as.data.frame.matrix(
+  addmargins(mo_vs_derived)
+) %>%
+  tibble::rownames_to_column(var = "Medical officer")
+
+knitr::kable(
+  q8_table_display,
+  caption = "Medical officer classification compared with derived risk"
+)
+
+# Extract the key result requested in Question 8
+q8_key_result <- tibble(
+  patients = as.integer(mo_vs_derived["Low risk", "High risk"]),
+  total_classified_low_risk_by_officer = sum(mo_vs_derived["Low risk", ]),
+  percentage_of_officer_low_risk = round(
+    100 * mo_vs_derived["Low risk", "High risk"] /
+      sum(mo_vs_derived["Low risk", ]),
+    2
+  )
+)
+
+knitr::kable(
+  q8_key_result,
+  caption = "Patients classified as low risk by the medical officer but high risk by the derived rule"
+)
+```
+
+Of the 530 patients classified as low risk by the medical officer, 185 had four or more abnormal parameters and therefore fell into the high-risk category under the specified derived rules. This represents 34.91% of the patients recorded as low risk by the medical officer.
+
+This is a discrepancy between the two classification approaches. It does not, by itself, establish which classification was clinically correct.
+
+## Question 9: Patients with abnormal clinical parameters
+
+The four variables represent binary indicators of abnormal findings: a value of 1 indicates an abnormal parameter and a value of 0 indicates a normal parameter. The counts below were calculated from the individual indicators.
+
+```{r q9}
+# Count patients with each abnormal parameter
+abnormal_counts <- tb_clean %>%
+  summarise(
+    `Respiratory rate` = sum(respiratory_rate == 1, na.rm = TRUE),
+    `BMI` = sum(bmi == 1, na.rm = TRUE),
+    `Haemoglobin` = sum(haemoglobin == 1, na.rm = TRUE),
+    `Oxygen saturation` = sum(oxygen_saturation == 1, na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = "parameter",
+    values_to = "n_abnormal"
+  ) %>%
+  arrange(desc(n_abnormal)) %>%
+  mutate(parameter = factor(parameter, levels = parameter))
+
+# Display the counts
+knitr::kable(
+  abnormal_counts,
+  caption = "Patients with abnormal clinical parameters"
+)
+
+# Create the descending-order column chart
+ggplot(abnormal_counts, aes(x = parameter, y = n_abnormal)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = n_abnormal), vjust = -0.5) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Number of Patients with Abnormal Parameters",
+    x = "Parameter",
+    y = "Number of patients with abnormal value"
+  )
+```
+
+BMI had the highest number of recorded abnormal findings (352), followed by respiratory rate (171), haemoglobin (138), and oxygen saturation (57). These counts refer to individual parameters; a patient may have more than one abnormal finding.
+
+
+## Question 10: Subset of male patients with no blood in sputum
+
+A subset was created to include only patients recorded as male who had no blood in sputum. Based on the dataset's coding note, a value of 1 indicates the presence of the symptom, so a value of 0 was used for absence.
+
+```{r q10-subset}
+# Create the subset without changing the complete dataset
+male_no_blood_sputum <- tb_clean %>%
+  filter(
+    gender == "Male",
+    blood_in_sputum == 0
+  )
+
+# Summarise the subset size and verify both conditions
+q10_summary <- tibble(
+  patients_in_subset = nrow(male_no_blood_sputum),
+  male_records = sum(male_no_blood_sputum$gender == "Male"),
+  records_with_no_blood_in_sputum =
+    sum(male_no_blood_sputum$blood_in_sputum == 0)
+)
+
+knitr::kable(
+  q10_summary,
+  caption = "Summary of the selected male patient subset"
+)
+
+# Display a small sample of the subset
+knitr::kable(
+  head(
+    male_no_blood_sputum %>%
+      select(id, gender, blood_in_sputum),
+    6
+  ),
+  caption = "First six records in the subset"
+)
+```
+
+The resulting subset contains 269 patients. All selected records are male and have blood in sputum recorded as 0. The complete working dataset remains unchanged.
+
+
+## Question 11: Consistency of the Recorded Count of Abnormal Parameters
+
+### Methods
+
+The data dictionary lists 16 indicators as components of `no_of_abnormal_parameters`. All 16 indicators were present in the dataset, were coded as numeric 0/1 variables, and had no missing values. For each of the 605 patients, an independent count was calculated by summing the indicators recorded as 1. This independent count was compared with the dataset's recorded count.
+
+The difference was defined as:
+
+**Difference = Independent count − Recorded count**
+
+The comparison was conducted as an exploratory data-quality check. Neither the original data nor the recorded abnormal-parameter count was modified.
+
+### Results
+
+The independently calculated and recorded counts agreed for 521 of 605 patients (86.12%) and differed for 84 patients (13.88%). In 57 patients (9.42%), the independent count was one higher than the recorded count. In 27 patients (4.46%), it was one lower. All observed differences were within one count, and no differences were missing.
+
+The following code reproduces the comparison and generates the summary tables directly from the dataset.
+
+```{r q11-check}
+# Define the 16 indicators documented as components of the total
+abnormal_indicators <- c(
+  "blood_in_sputum",
+  "pulse_rate",
+  "temperature",
+  "systolic_bp",
+  "diastolic_bp",
+  "respiratory_rate",
+  "oxygen_saturation",
+  "bmi",
+  "cal_muac",
+  "paedal_ordema",
+  "jaundice",
+  "haemoglobin",
+  "wbc",
+  "rbs",
+  "hiv",
+  "chest_x_ray"
+)
+
+# Calculate an independent count for each patient
+# while preserving the recorded count
+q11_check <- tibble(
+  id = tb_clean$id,
+  recorded_count = tb_clean$no_of_abnormal_parameters,
+  independent_count = rowSums(
+    tb_clean[abnormal_indicators] == 1,
+    na.rm = TRUE
+  )
+) %>%
+  mutate(
+    difference = independent_count - recorded_count
+  )
+
+# Summarise the differences
+q11_difference_summary <- q11_check %>%
+  mutate(
+    difference_group = case_when(
+      difference == -1 ~ "Independent count one lower",
+      difference == 0  ~ "Counts agree",
+      difference == 1  ~ "Independent count one higher",
+      TRUE ~ "Other difference"
+    )
+  ) %>%
+  count(difference, difference_group, name = "patients") %>%
+  mutate(
+    percentage = round(100 * patients / sum(patients), 2)
+  ) %>%
+  arrange(difference) %>%
+  select(difference_group, patients, percentage)
+
+knitr::kable(
+  q11_difference_summary,
+  caption = "Agreement between recorded and independently calculated counts"
+)
+
+# Summarise temperature flags by difference group
+q11_temperature_summary <- tb_clean %>%
+  select(id, temperature) %>%
+  left_join(
+    q11_check %>% select(id, difference),
+    by = "id"
+  ) %>%
+  group_by(difference) %>%
+  summarise(
+    patients = n(),
+    temperature_flagged = sum(temperature == 1),
+    .groups = "drop"
+  ) %>%
+  arrange(difference)
+
+knitr::kable(
+  q11_temperature_summary,
+  caption = "Temperature flags by count-difference group"
+)
+```
+
+### Interpretation
+
+The comparison identified a discrepancy between the recorded abnormal-parameter total and the independently calculated sum of the 16 indicators. The concentration of temperature flags among patients with a difference of +1 is a pattern that merits further investigation.
+
+All 57 patients with a difference of +1 had temperature recorded as 1. Among these patients, the recorded count equalled the count calculated from the other 15 indicators when temperature was excluded. However, this equality follows arithmetically from the definition of the difference and is not independent proof that temperature was omitted from the original calculation.
+
+Temperature was also flagged in seven patients whose counts matched, and it was not flagged in any of the 27 patients whose independent count was one lower than the recorded count. Therefore, the temperature pattern does not explain all discrepancies. The cause remains unknown, and these findings do not establish whether the recorded count or the independent count is more accurate.
+
+### Recommendation
+
+The data owners should confirm how `no_of_abnormal_parameters` is defined and generated. If the recorded total is intended to equal the sum of the 16 indicators, an automated validation check should flag records where the recorded and independently calculated counts disagree. The discrepancies should be reviewed before either count is corrected or treated as the definitive value.
